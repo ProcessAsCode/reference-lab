@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch components at the pinned commits
+        run: scripts/fetch-components.sh
+      - name: Generate .env
+        run: scripts/init-env.sh
+      - name: Compose configuration (core and all profiles)
+        run: |
+          docker compose config -q
+          docker compose --profile dms --profile legal --profile studio config -q
+      - name: Every build context exists
+        run: |
+          for svc in $(docker compose --profile dms --profile legal --profile studio config --format json | jq -r '.services[] | select(.build) | .build.context'); do
+            test -d "$svc" || { echo "missing build context: $svc"; exit 1; }
+          done
+      - name: Edge gateway configuration
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q apache2 libapache2-mod-auth-openidc libapache2-mod-security2
+          sudo a2enmod proxy proxy_http proxy_wstunnel headers macro auth_openidc security2
+          sudo cp /etc/modsecurity/modsecurity.conf-recommended /etc/modsecurity/modsecurity.conf
+          sudo mkdir -p /var/www/lab && sudo cp -r edge/www/. /var/www/lab/
+          sudo cp edge/conf/lab.conf /etc/apache2/sites-available/lab.conf && sudo a2ensite lab
+          sudo env LAB_DOMAIN=lab.localhost LAB_SCHEME=http LAB_WAF_MODE=DetectionOnly \
+               OIDC_CLIENT_SECRET=ci OIDC_CRYPTO_PASSPHRASE=ci apache2ctl -t
+      - name: Keycloak realm is valid JSON
+        run: jq -e '.realm == "pac"' keycloak/realm-pac.json
