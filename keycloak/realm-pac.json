@@ -1,0 +1,51 @@
+{
+  "realm": "pac",
+  "displayName": "Process-as-Code lab",
+  "enabled": true,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "sslRequired": "external",
+  "passwordPolicy": "length(12) and notUsername",
+  "roles": {
+    "realm": [
+      { "name": "process-designer", "description": "Designs and publishes UAPF process packages" },
+      { "name": "process-operator", "description": "Runs processes and completes human tasks" },
+      { "name": "auditor", "description": "Reads audit trails and run history" }
+    ]
+  },
+  "groups": [
+    {
+      "name": "example-organisation",
+      "attributes": { "description": ["Example member organisation of the lab"] },
+      "realmRoles": ["process-operator"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "edge",
+      "name": "Lab edge gateway",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "${LAB_SCHEME}://${LAB_DOMAIN}/oauth2callback",
+        "${LAB_SCHEME}://processgit.${LAB_DOMAIN}/oauth2callback",
+        "${LAB_SCHEME}://studio.${LAB_DOMAIN}/oauth2callback",
+        "${LAB_SCHEME}://dms.${LAB_DOMAIN}/oauth2callback",
+        "${LAB_SCHEME}://legal.${LAB_DOMAIN}/oauth2callback"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "post.logout.redirect.uris": "${LAB_SCHEME}://${LAB_DOMAIN}/*"
+      }
+    }
+  ]
+}

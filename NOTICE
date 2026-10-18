@@ -1,0 +1,12 @@
+Process-as-Code reference lab
+Copyright (c) 2026 Cyberfort SIA, Latvia.
+
+Licensed under the Apache License, Version 2.0 - see LICENSE.
+Part of the Process-as-Code open-source stack: https://github.com/ProcessAsCode
+
+This repository contains deployment configuration only. The components it
+fetches (listed in components.lock) are separate works under their own
+licences: AGPL-3.0-only (processgit, studio, opendms, openlegal),
+Apache-2.0 (process-agent, event-signer), ISC (uapf-engine) and MIT
+(UAPF-IP and its example packages). Third-party container images
+(Keycloak, PostgreSQL, Redis, nginx, Ubuntu) remain under their own terms.

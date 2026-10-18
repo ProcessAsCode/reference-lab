@@ -1,0 +1,318 @@
+# Process-as-Code reference lab: the whole stack as one deployable system.
+#
+#   scripts/fetch-components.sh       # components at the pinned commits
+#   scripts/init-env.sh               # .env with generated secrets
+#   docker compose up -d --build      # core
+#   docker compose --profile dms --profile legal --profile studio up -d --build
+#
+# Core: edge gateway, identity, ProcessGit, process runtime, process agent,
+# event signer. Profiles add host systems. The LLM gateway is external.
+
+name: pac-lab
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # ── Edge and identity ──────────────────────────────────────────────
+  edge:
+    <<: *restart
+    build: ./edge
+    environment:
+      LAB_DOMAIN: ${LAB_DOMAIN:?set LAB_DOMAIN}
+      LAB_SCHEME: ${LAB_SCHEME:-http}
+      LAB_WAF_MODE: ${LAB_WAF_MODE:-DetectionOnly}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?run scripts/init-env.sh}
+      OIDC_CRYPTO_PASSPHRASE: ${OIDC_CRYPTO_PASSPHRASE:?run scripts/init-env.sh}
+    ports:
+      - "80:80"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  keycloak-db:
+    <<: *restart
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD:?run scripts/init-env.sh}
+      POSTGRES_DB: keycloak
+    volumes:
+      - keycloak-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      retries: 20
+
+  keycloak:
+    <<: *restart
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start", "--import-realm", "--http-enabled=true", "--proxy-headers=xforwarded", "--health-enabled=true"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-db
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+      KC_HOSTNAME: ${LAB_SCHEME:-http}://auth.${LAB_DOMAIN}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:-labadmin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:?run scripts/init-env.sh}
+      # Read by the realm import (keycloak/realm-pac.json placeholders).
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      LAB_DOMAIN: ${LAB_DOMAIN}
+      LAB_SCHEME: ${LAB_SCHEME:-http}
+    volumes:
+      - ./keycloak/realm-pac.json:/opt/keycloak/data/import/realm-pac.json:ro
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      retries: 30
+
+  # ── Core ───────────────────────────────────────────────────────────
+  processgit:
+    <<: *restart
+    build: ./components/processgit
+    environment:
+      GITEA__server__DOMAIN: processgit.${LAB_DOMAIN}
+      GITEA__server__ROOT_URL: ${LAB_SCHEME:-http}://processgit.${LAB_DOMAIN}/
+      GITEA__server__DISABLE_SSH: "true"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__security__SECRET_KEY: ${PROCESSGIT_SECRET_KEY:?run scripts/init-env.sh}
+      GITEA__security__INTERNAL_TOKEN: ${PROCESSGIT_INTERNAL_TOKEN:?run scripts/init-env.sh}
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__security__REVERSE_PROXY_AUTHENTICATION_USER: OIDC_CLAIM_preferred_username
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION: "true"
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTO_REGISTRATION: "true"
+      GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES: "*"
+    volumes:
+      - processgit-data:/data
+
+  uapf-engine:
+    <<: *restart
+    build:
+      context: ./components/uapf-engine
+      dockerfile: ../../engine/Dockerfile
+    environment:
+      PORT: "4000"
+      PACKAGES_DIR: /packages
+      UAPF_SESSIONS_DIR: /app/sessions
+    volumes:
+      - ./packages:/packages:ro
+      - engine-sessions:/app/sessions
+
+  process-agent:
+    <<: *restart
+    build: ./components/process-agent
+    environment:
+      AGENT_CONFIG: /app/config/agent.yaml
+      AGENT_DID: did:web:agent.${LAB_DOMAIN}
+      AGENT_API_TOKEN: ${AGENT_API_TOKEN:?run scripts/init-env.sh}
+      LLM_BASE_URL: ${LLM_GATEWAY_URL}/v1
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    volumes:
+      - ./agent/agent.yaml:/app/config/agent.yaml:ro
+      - agent-data:/app/data
+    ports:
+      - "127.0.0.1:4100:4100"   # agent API and MCP adapter, local only
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      uapf-engine:
+        condition: service_healthy
+
+  event-signer:
+    <<: *restart
+    build: ./components/event-signer
+    environment:
+      PORT: "3100"
+      SECRET_KEY: ${EVENT_SIGNER_SECRET_KEY:?run scripts/init-env.sh}
+      SIGNING_MODE: local
+      VC_HOST_BASE: http://event-signer:3100
+      CONTEXT_ORIGIN: http://event-signer:3100
+    volumes:
+      - signer-status:/app/status-data
+      - signer-data:/app/data
+
+  # ── Profile "dms": OpenDMS ──────────────────────────────────────────
+  dms-db:
+    <<: *restart
+    profiles: [dms]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: opendms
+      POSTGRES_PASSWORD: ${DMS_DB_PASSWORD:-unset}
+      POSTGRES_DB: opendms
+    volumes:
+      - dms-db:/var/lib/postgresql/data
+
+  dms-redis:
+    <<: *restart
+    profiles: [dms]
+    image: redis:7-alpine
+
+  dms-api:
+    <<: *restart
+    profiles: [dms]
+    build: ./components/opendms
+    networks:
+      default:
+        aliases: [api]          # the OpenDMS frontend proxies to "api"
+    environment:
+      OPENDMS_DATABASE_URL: postgresql://opendms:${DMS_DB_PASSWORD:-unset}@dms-db:5432/opendms
+      OPENDMS_REDIS_URL: redis://dms-redis:6379
+      OPENDMS_SDK_URL: http://event-signer:3100
+      OPENDMS_SDK_ENABLED: "true"
+      OPENDMS_STORAGE_BACKEND: local
+      OPENDMS_STORAGE_LOCAL_PATH: /data/documents
+      OPENDMS_JWT_SECRET: ${DMS_JWT_SECRET:-unset}
+      OPENDMS_MCP_NODE_TOKEN: ${DMS_MCP_NODE_TOKEN:-unset}
+      OPENDMS_SUPERADMIN_EMAIL: ${DMS_SUPERADMIN_EMAIL:-admin@example.org}
+      OPENDMS_SUPERADMIN_PASSWORD: ${DMS_SUPERADMIN_PASSWORD:-unset}
+      OPENDMS_DEBUG: "false"
+      OPENDMS_LLM_PROVIDER: openai
+      OPENDMS_LLM_BASE_URL: ${LLM_GATEWAY_URL}
+      OPENDMS_LLM_API_KEY: ${LLM_API_KEY:-}
+      OPENDMS_LLM_MODEL: ${LLM_MODEL:-}
+      OPENDMS_UAPF_ENABLED: "true"
+      OPENDMS_UAPF_ENGINE_URL: http://uapf-engine:4000
+      OPENDMS_OPENDMS_HOST_BASE_URL: http://dms-api:8002
+      OPENDMS_OPENDMS_HOST_DID: did:web:dms.${LAB_DOMAIN}
+    volumes:
+      - dms-documents:/data/documents
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on: [dms-db, dms-redis, event-signer, uapf-engine]
+
+  dms-frontend:
+    <<: *restart
+    profiles: [dms]
+    build: ./components/opendms/frontend
+    depends_on: [dms-api]
+
+  # ── Profile "legal": OpenLegal ──────────────────────────────────────
+  legal-db:
+    <<: *restart
+    profiles: [legal]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openlegal
+      POSTGRES_PASSWORD: ${LEGAL_DB_PASSWORD:-unset}
+      POSTGRES_DB: openlegal
+    volumes:
+      - legal-db:/var/lib/postgresql/data
+
+  legal-cache:
+    <<: *restart
+    profiles: [legal]
+    image: redis:7-alpine
+
+  legal-eligumi:
+    <<: *restart
+    profiles: [legal]
+    build: ./components/openlegal/services/eligumi
+    environment:
+      ELIGUMI_TENANT_SLUG: example
+      ELIGUMI_TENANT_NAME: Example organisation
+      ELIGUMI_API_KEY: ${ELIGUMI_API_KEY:-unset}
+      LLM_PROVIDER: openai_compat
+      LLM_ENDPOINT: ${LLM_GATEWAY_URL}/v1
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    volumes:
+      - legal-eligumi:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  legal-api:
+    <<: *restart
+    profiles: [legal]
+    build: ./components/openlegal
+    environment:
+      OPENLEGAL_DB_URL: postgresql+asyncpg://openlegal:${LEGAL_DB_PASSWORD:-unset}@legal-db:5432/openlegal
+      OPENLEGAL_REDIS_URL: redis://legal-cache:6379/0
+      OPENLEGAL_UAPF_ENGINE_URL: http://uapf-engine:4000
+      OPENLEGAL_ELIGUMI_BASE_URL: http://legal-eligumi:8050
+      OPENLEGAL_ELIGUMI_API_KEY: ${ELIGUMI_API_KEY:-unset}
+      OPENLEGAL_LLM_PROVIDER: openai_compat
+      OPENLEGAL_LLM_ENDPOINT: ${LLM_GATEWAY_URL}/v1
+      OPENLEGAL_LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    volumes:
+      - legal-attachments:/data/openlegal/attachments
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on: [legal-db, legal-cache, legal-eligumi, uapf-engine]
+
+  legal-frontend:
+    <<: *restart
+    profiles: [legal]
+    build: ./components/openlegal/frontend/web
+    depends_on: [legal-api]
+
+  # ── Profile "studio": Studio ────────────────────────────────────────
+  studio-db:
+    <<: *restart
+    profiles: [studio]
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: algomation_studio
+      POSTGRES_USER: algomation
+      POSTGRES_PASSWORD: ${STUDIO_DB_PASSWORD:-unset}
+    volumes:
+      - studio-db:/var/lib/postgresql/data
+      - ./components/studio/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+
+  studio-redis:
+    <<: *restart
+    profiles: [studio]
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${STUDIO_REDIS_PASSWORD:-unset}"]
+
+  studio-backend:
+    <<: *restart
+    profiles: [studio]
+    build: ./components/studio/backend
+    networks:
+      default:
+        aliases: [algomation-backend]   # Studio's web server proxies to this name
+    environment:
+      NODE_ENV: production
+      PORT: "37100"
+      DATABASE_URL: postgresql://algomation:${STUDIO_DB_PASSWORD:-unset}@studio-db:5432/algomation_studio
+      REDIS_URL: redis://:${STUDIO_REDIS_PASSWORD:-unset}@studio-redis:6379/0
+      SESSION_SECRET: ${STUDIO_SESSION_SECRET:-unset}
+      COOKIE_SECURE: ${STUDIO_COOKIE_SECURE:-false}
+      CORS_ORIGIN: ${LAB_SCHEME:-http}://studio.${LAB_DOMAIN}
+      TRUST_PROXY: "true"
+    volumes:
+      - ./components/studio/database:/database:ro
+    depends_on: [studio-db, studio-redis]
+
+  studio-web:
+    <<: *restart
+    profiles: [studio]
+    image: nginx:alpine
+    volumes:
+      - ./components/studio/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./components/studio/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./components/studio/frontend:/usr/share/nginx/html:ro
+    depends_on: [studio-backend]
+
+volumes:
+  keycloak-db:
+  processgit-data:
+  engine-sessions:
+  agent-data:
+  signer-status:
+  signer-data:
+  dms-db:
+  dms-documents:
+  legal-db:
+  legal-eligumi:
+  legal-attachments:
+  studio-db:
