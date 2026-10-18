@@ -1,9 +1,9 @@
 # name          repository                                          commit
 processgit      https://github.com/ProcessAsCode/processgit         83788f51b4697835864c2c48df4ee8bd7d42cc7f
 studio          https://github.com/ProcessAsCode/studio             0e1589ecf674973a8dd67f94c70e85b9eb8b1ab2
-opendms         https://github.com/ProcessAsCode/opendms            1bda36e9de362ea1faf86eccc3d8565bb5daba18
-openlegal       https://github.com/ProcessAsCode/openlegal          80b1a5e409fcfce729c6a06c5db6ba3cd5030164
-event-signer    https://github.com/ProcessAsCode/event-signer       1525989b113a28cf0ebc9449187a630199774be3
-process-agent   https://github.com/ProcessAsCode/process-agent      02afd8de4652658088525c7c8192b99f99d87277
+opendms         https://github.com/ProcessAsCode/opendms            a539c4c678368638239af7039d242e6d9c152a07
+openlegal       https://github.com/ProcessAsCode/openlegal          0d3862e0090ffc83cdeec6e57c496bef12cd36db
+event-signer    https://github.com/ProcessAsCode/event-signer       7091b47f56a31e8cd5b3c0a33ea9b35849fb8e6e
+process-agent   https://github.com/ProcessAsCode/process-agent      a087ed82eab305151333dc6f5fc3a6d6d4a1ef29
 uapf-engine     https://github.com/UAPFormat/uapf-engine            768fa052f3124698a0eb0373af165b3109bea705
 uapf-ip         https://github.com/UAPFormat/UAPF-IP                94c8d478ec778e04a9dc88a82f4ccd006e788b34

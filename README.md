@@ -1,5 +1,7 @@
 # Process-as-Code reference lab
 
+[![CI](https://github.com/ProcessAsCode/reference-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/ProcessAsCode/reference-lab/actions/workflows/ci.yml)
+
 The whole [Process-as-Code](https://github.com/ProcessAsCode) stack as one deployable system: processes as versioned UAPF packages, executed by a process runtime and a governed AI agent, behind a single sign-in, with every step recorded. It runs on one machine with Docker Compose and any OpenAI-compatible LLM gateway.
 
 ```
